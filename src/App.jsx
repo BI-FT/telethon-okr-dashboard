@@ -360,6 +360,45 @@ function MetricTooltip({ active, payload, label }) {
   );
 }
 
+function RankingTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+
+  const item = payload[0]?.payload;
+
+  if (!item) return null;
+
+  const outlookColor = OUTLOOK_COLORS[item.outlook] || BRAND_COLORS.darkBlue;
+
+  return (
+    <div className="max-w-xs rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-lg">
+      <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+        Metrica {item.id}
+      </div>
+
+      <div className="mt-1 font-black leading-snug text-slate-900">
+        {item.metric}
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-bold">
+        <div className="rounded-lg bg-slate-50 p-2">
+          <div className="text-[9px] uppercase text-slate-400">YoY</div>
+          <div style={{ color: yoyColor(item) }}>{fmtPct(item.yoy)}</div>
+        </div>
+
+        <div className="rounded-lg bg-slate-50 p-2">
+          <div className="text-[9px] uppercase text-slate-400">Outlook</div>
+          <div
+            className="mt-1 inline-flex rounded px-2 py-0.5 text-[10px] font-black text-white"
+            style={{ backgroundColor: outlookColor }}
+          >
+            {item.outlook}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function InsightBox({ title = "Insight", insight }) {
   if (!insight || (!insight.title && !insight.bullets?.length)) {
     return (
@@ -1076,7 +1115,7 @@ function PdfExportArea({ qKey, dataView, phaseScoresOnly, insights }) {
                 </h1>
 
                 <p className="mt-1 text-xs font-semibold text-slate-400">
-                  Dashboard di valutazione delle Key Metrics di OKR
+                  Dashboard di valutazione delle Key Metrics di OKR.
                 </p>
               </div>
             </div>
@@ -1506,7 +1545,7 @@ export default function App() {
               </h1>
 
               <p className="mt-1 text-xs font-semibold text-slate-400">
-                Dashboard di valutazione delle Key Metrics di OKR
+                Dashboard di valutazione delle Key Metrics di OKR.
               </p>
             </div>
           </div>
@@ -1534,7 +1573,7 @@ export default function App() {
               onClick={exportPDF}
               className="bg-[#3B539E] text-white px-6 py-2.5 rounded-xl font-bold text-sm shadow-md hover:opacity-90 transition-all flex items-center justify-center gap-2"
             >
-              🖨️ SALVA REPORT {qKey} IN PDF 
+              🖨️ SALVA REPORT {qKey} IN PDF
             </button>
           </div>
         </header>
@@ -1651,13 +1690,7 @@ export default function App() {
                     className="text-xs font-bold"
                   />
 
-                  <Tooltip
-                    formatter={(value) => [fmtPct(value), "YoY"]}
-                    labelFormatter={(label) =>
-                      yoyRanking.find((item) => item.name === label)?.metric ||
-                      label
-                    }
-                  />
+                  <Tooltip content={<RankingTooltip />} />
 
                   <Bar dataKey="yoy" radius={[6, 6, 0, 0]}>
                     {yoyRanking.map((entry) => (
