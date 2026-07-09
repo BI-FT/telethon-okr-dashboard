@@ -59,6 +59,83 @@ const phaseOptions = ["Tutte", "Awareness", "Consideration", "Conversion"];
 const outlookOptions = ["Tutti", "POSITIVO", "STABILE", "NEGATIVO"];
 const INVERTED_YOY_KPI_IDS = new Set(["3.2", "3.3", "3.5"]);
 
+const MIN_SELECTABLE_QUARTER = "Q1 2026";
+const QUARTER_VALUE_HEADER_RE = /^Q([1-4])\s+(20\d{2})$/i;
+const QUARTER_FIELD_HEADER_RE = /^(YOY|BENCH|OUTLOOK)\s+Q([1-4])(\d{2})$/i;
+
+function formatQuarterKey(quarter, year) {
+  return `Q${quarter} ${year}`;
+}
+
+function parseQuarterValueHeader(header) {
+  const match = normalizeText(header).match(QUARTER_VALUE_HEADER_RE);
+  if (!match) return null;
+  const [, quarter, year] = match;
+  return formatQuarterKey(quarter, year);
+}
+
+function parseQuarterFieldHeader(header) {
+  const match = normalizeText(header).match(QUARTER_FIELD_HEADER_RE);
+  if (!match) return null;
+  const [, field, quarter, shortYear] = match;
+  return { field: field.toUpperCase(), quarterKey: formatQuarterKey(quarter, `20${shortYear}`) };
+}
+
+function compareQuarterKeys(a, b) {
+  const ma = normalizeText(a).match(/^Q([1-4])\s+(20\d{2})$/i);
+  const mb = normalizeText(b).match(/^Q([1-4])\s+(20\d{2})$/i);
+  if (!ma || !mb) return normalizeText(a).localeCompare(normalizeText(b), "it-IT");
+  const [, qa, ya] = ma;
+  const [, qb, yb] = mb;
+  const byYear = Number(ya) - Number(yb);
+  return byYear !== 0 ? byYear : Number(qa) - Number(qb);
+}
+
+function getQuarterDisplayLabel(qKey) {
+  return qKey ? `${qKey} Consuntivo` : "Periodo non disponibile";
+}
+
+function normalizeParsedCellValue(rawValue) {
+  if (rawValue === "" || rawValue === undefined || rawValue === null || rawValue === "null" || rawValue === "-") {
+    return null;
+  }
+  const numberValue = toNumberOrNull(rawValue);
+  return numberValue !== null ? numberValue : String(rawValue).trim();
+}
+
+function isMetricDataRow(row) {
+  return /^([0-9]+\.[0-9]+)/.test(normalizeText(row?.metric));
+}
+
+function hasQuarterMetricValue(rows, qKey) {
+  return rows.some((row) => {
+    if (!isMetricDataRow(row)) return false;
+    const value = row?.quarters?.[qKey]?.value;
+    return value !== null && value !== undefined && normalizeText(value) !== "";
+  });
+}
+
+function isQuarterSelectable(rows, qKey, minQuarter = MIN_SELECTABLE_QUARTER) {
+  if (!qKey) return false;
+  if (compareQuarterKeys(qKey, minQuarter) < 0) return false;
+  return hasQuarterMetricValue(rows, qKey);
+}
+
+function buildMetricHistory(row) {
+  const allQuarterKeys = [...new Set([...Object.keys(row.quarterValues || {}), ...Object.keys(row.quarters || {})])]
+    .sort(compareQuarterKeys);
+
+  return allQuarterKeys
+    .map((quarterKey) => {
+      const match = normalizeText(quarterKey).match(/^Q([1-4])\s+(20\d{2})$/i);
+      const value = row.quarterValues?.[quarterKey] ?? row.quarters?.[quarterKey]?.value ?? null;
+      if (!match || value === null || value === undefined) return null;
+      const [, quarter, year] = match;
+      return { q: `Q${quarter} ${String(year).slice(-2)}`, v: value };
+    })
+    .filter(Boolean);
+}
+
 function normalizeText(value) {
   return String(value ?? "").trim();
 }
@@ -96,47 +173,33 @@ function getStatusColor(status, score) {
   return STATUS_COLORS[normalized] || getScoreBand(score).color;
 }
 
+function getQuarterData(row, qKey) {
+  return row?.quarters?.[qKey] || { value: null, yoy: null, bench: null, outlook: null };
+}
+
 function getQuarterValue(row, qKey) {
-  return qKey === "Q1" ? row.q1_2026 : row.q2_2026;
+  return getQuarterData(row, qKey).value;
 }
 
 function getQuarterYoY(row, qKey) {
-  return qKey === "Q1" ? row.yoy_q1 : row.yoy_q2;
+  return getQuarterData(row, qKey).yoy;
 }
 
 function getQuarterBench(row, qKey) {
-  return qKey === "Q1" ? row.bench_q1 : row.bench_q2;
+  return getQuarterData(row, qKey).bench;
 }
 
 function getQuarterOutlook(row, qKey) {
-  return qKey === "Q1" ? row.outlook_q1 : row.outlook_q2;
+  return getQuarterData(row, qKey).outlook;
 }
 
 function getSummaryScore(row, qKey) {
-  const scoreFromQuarterColumn = toNumberOrNull(getQuarterValue(row, qKey));
-
-  if (scoreFromQuarterColumn !== null) {
-    return scoreFromQuarterColumn;
-  }
-
-  const scoreFromOutlookColumn = toNumberOrNull(getQuarterOutlook(row, qKey));
-
-  if (scoreFromOutlookColumn !== null) {
-    return scoreFromOutlookColumn;
-  }
-
+  const quarterData = getQuarterData(row, qKey);
+  const scoreFromQuarterColumn = toNumberOrNull(quarterData.value);
+  if (scoreFromQuarterColumn !== null) return scoreFromQuarterColumn;
+  const scoreFromOutlookColumn = toNumberOrNull(quarterData.outlook);
+  if (scoreFromOutlookColumn !== null) return scoreFromOutlookColumn;
   return null;
-}
-
-function getInsightColumnByQuarter(qKey) {
-  const map = {
-    Q1: "OUTLOOK Q126",
-    Q2: "OUTLOOK Q226",
-    Q3: "OUTLOOK Q326",
-    Q4: "OUTLOOK Q426",
-  };
-
-  return map[qKey] || "OUTLOOK Q126";
 }
 
 function normalizeInsightKey(value) {
@@ -829,8 +892,7 @@ function transformSheetsData(values) {
   if (!values || values.length < 2) return [];
 
   const rawHeaders = values[0].map((header) => String(header).trim());
-
-  const headerMap = {
+  const baseHeaderMap = {
     "Fase (Nome)": "phase",
     "Fase (Numero)": "phaseNum",
     "Key Metric": "metric",
@@ -838,83 +900,67 @@ function transformSheetsData(values) {
     "Sorgente dati": "source",
     "Note sulla rilevazione": "note",
     "Target di fine anno": "yearTarget",
-    "Q1 2025": "q1_2025",
-    "Q2 2025": "q2_2025",
-    "Q3 2025": "q3_2025",
-    "Q4 2025": "q4_2025",
-    "Q1 2026": "q1_2026",
-    "YOY Q126": "yoy_q1",
-    "BENCH Q126": "bench_q1",
-    "OUTLOOK Q126": "outlook_q1",
-    "Q2 2026": "q2_2026",
-    "YOY Q226": "yoy_q2",
-    "BENCH Q226": "bench_q2",
-    "OUTLOOK Q226": "outlook_q2",
   };
 
   return values.slice(1).map((row) => {
-    const obj = {};
-
-    Object.values(headerMap).forEach((key) => {
-      obj[key] = null;
-    });
+    const obj = { phase: null, phaseNum: null, metric: null, reason: null, source: null, note: null, yearTarget: null, quarterValues: {}, quarters: {} };
 
     rawHeaders.forEach((header, index) => {
-      const internalKey = headerMap[header];
-
-      if (!internalKey) return;
-
-      const rawValue = row[index];
-
-      if (
-        rawValue === "" ||
-        rawValue === undefined ||
-        rawValue === null ||
-        rawValue === "null" ||
-        rawValue === "-"
-      ) {
-        obj[internalKey] = null;
+      const normalizedValue = normalizeParsedCellValue(row[index]);
+      const baseField = baseHeaderMap[header];
+      if (baseField) {
+        obj[baseField] = normalizedValue;
         return;
       }
 
-      const numberValue = toNumberOrNull(rawValue);
-
-      if (numberValue !== null) {
-        obj[internalKey] = numberValue;
-      } else {
-        obj[internalKey] = String(rawValue).trim();
+      const quarterValueKey = parseQuarterValueHeader(header);
+      if (quarterValueKey) {
+        obj.quarterValues[quarterValueKey] = normalizedValue;
+        obj.quarters[quarterValueKey] ||= { value: null, yoy: null, bench: null, outlook: null };
+        obj.quarters[quarterValueKey].value = normalizedValue;
+        return;
       }
+
+      const parsedField = parseQuarterFieldHeader(header);
+      if (!parsedField) return;
+      const { field, quarterKey } = parsedField;
+      obj.quarters[quarterKey] ||= { value: null, yoy: null, bench: null, outlook: null };
+      if (field === "YOY") obj.quarters[quarterKey].yoy = normalizedValue;
+      if (field === "BENCH") obj.quarters[quarterKey].bench = normalizedValue;
+      if (field === "OUTLOOK") obj.quarters[quarterKey].outlook = normalizedValue;
     });
 
     return obj;
   });
 }
 
-function transformInsightsData(values, qKey) {
+function transformInsightsData(values) {
   if (!values || values.length < 2) return {};
 
   const headers = values[0].map((header) => String(header).trim());
   const phaseIndex = headers.findIndex((header) => normalizeUpper(header) === "FASE");
-  const insightHeader = getInsightColumnByQuarter(qKey);
-  const insightIndex = headers.findIndex(
-    (header) => normalizeUpper(header) === normalizeUpper(insightHeader)
-  );
+  if (phaseIndex === -1) return {};
 
-  if (phaseIndex === -1 || insightIndex === -1) return {};
+  const quarterColumns = headers
+    .map((header, index) => {
+      const parsedField = parseQuarterFieldHeader(header);
+      if (!parsedField || parsedField.field !== "OUTLOOK") return null;
+      return { index, quarterKey: parsedField.quarterKey };
+    })
+    .filter(Boolean);
 
-  const insights = {};
+  const insightsByQuarter = {};
 
   values.slice(1).forEach((row) => {
-    const sectionName = row[phaseIndex];
-    const rawInsight = row[insightIndex];
-    const key = normalizeInsightKey(sectionName);
-
+    const key = normalizeInsightKey(row[phaseIndex]);
     if (!key) return;
-
-    insights[key] = parseInsightText(rawInsight);
+    quarterColumns.forEach(({ index, quarterKey }) => {
+      insightsByQuarter[quarterKey] ||= {};
+      insightsByQuarter[quarterKey][key] = parseInsightText(row[index]);
+    });
   });
 
-  return insights;
+  return insightsByQuarter;
 }
 
 function PdfExportArea({ qKey, dataView, phaseScoresOnly, insights }) {
@@ -1121,7 +1167,7 @@ function PdfExportArea({ qKey, dataView, phaseScoresOnly, insights }) {
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700">
-              {qKey === "Q1" ? "Q1 2026 Consuntivo" : "Q2 2026 Consuntivo"}
+              {getQuarterDisplayLabel(qKey)}
             </div>
           </header>
 
@@ -1203,8 +1249,10 @@ function PdfExportArea({ qKey, dataView, phaseScoresOnly, insights }) {
 }
 
 export default function App() {
-  const SPREADSHEET_ID = "1cv6c2VoUDK-GMiC1tMDKKVHzLUtllwbCY-LyRkePM0M";
-  const API_KEY = "AIzaSyDuhqbqviJZS6urlY5i8YqPzB7InJxAoB8";
+  const SPREADSHEET_ID =
+    import.meta.env.VITE_GOOGLE_SHEET_ID || "1cv6c2VoUDK-GMiC1tMDKKVHzLUtllwbCY-LyRkePM0M";
+  const API_KEY =
+    import.meta.env.VITE_GOOGLE_SHEETS_API_KEY || "AIzaSyDuhqbqviJZS6urlY5i8YqPzB7InJxAoB8";
   const SHEET_RANGES = ["DB", "Insights"];
 
   const [rawRows, setRawRows] = useState([]);
@@ -1212,53 +1260,66 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState("");
 
-  const [qKey, setQKey] = useState("Q1");
+  const [qKey, setQKey] = useState("");
   const [phase, setPhase] = useState("Tutte");
   const [outlookFilter, setOutlookFilter] = useState("Tutti");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("1.1");
 
   useEffect(() => {
-    const queryRanges = SHEET_RANGES.map(
-      (range) => `ranges=${encodeURIComponent(range)}`
-    ).join("&");
-
+    const controller = new AbortController();
+    const queryRanges = SHEET_RANGES.map((range) => `ranges=${encodeURIComponent(range)}`).join("&");
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchGet?${queryRanges}&key=${API_KEY}`;
 
-    fetch(url)
+    fetch(url, { signal: controller.signal })
       .then((res) => {
-        if (!res.ok) {
-          throw new Error(`Errore Google Sheets: ${res.status}`);
-        }
-
+        if (!res.ok) throw new Error(`Errore Google Sheets: ${res.status}`);
         return res.json();
       })
       .then((data) => {
         const valueRanges = data.valueRanges || [];
-
-        const dbValues =
-          valueRanges.find((item) => normalizeUpper(item.range).startsWith("DB!"))
-            ?.values || [];
-
-        const insightsValues =
-          valueRanges.find((item) =>
-            normalizeUpper(item.range).includes("INSIGHTS!")
-          )?.values || [];
-
+        const dbValues = valueRanges.find((item) => normalizeUpper(item.range).startsWith("DB!"))?.values || [];
+        const insightsSheetValues = valueRanges.find((item) => normalizeUpper(item.range).includes("INSIGHTS!"))?.values || [];
         setRawRows(transformSheetsData(dbValues));
-        setInsightValues(insightsValues);
+        setInsightValues(insightsSheetValues);
         setLoading(false);
       })
       .catch((error) => {
+        if (error.name === "AbortError") return;
         console.error(error);
         setFetchError(error.message || "Errore durante il caricamento dei dati.");
         setLoading(false);
       });
-  }, []);
 
-  const insights = useMemo(() => {
-    return transformInsightsData(insightValues, qKey);
-  }, [insightValues, qKey]);
+    return () => controller.abort();
+  }, [API_KEY, SPREADSHEET_ID]);
+
+  const insightsByQuarter = useMemo(() => transformInsightsData(insightValues), [insightValues]);
+
+  const availableQuarters = useMemo(() => {
+    const quarterSet = new Set();
+    rawRows.forEach((row) => {
+      Object.keys(row.quarters || {}).forEach((quarterKey) => quarterSet.add(quarterKey));
+    });
+    Object.keys(insightsByQuarter || {}).forEach((quarterKey) => quarterSet.add(quarterKey));
+    return [...quarterSet]
+      .filter((quarterKey) => isQuarterSelectable(rawRows, quarterKey, MIN_SELECTABLE_QUARTER))
+      .sort(compareQuarterKeys);
+  }, [insightsByQuarter, rawRows]);
+
+  const isCurrentQuarterSelectable = useMemo(
+    () => isQuarterSelectable(rawRows, qKey, MIN_SELECTABLE_QUARTER),
+    [rawRows, qKey]
+  );
+
+  useEffect(() => {
+    if (!availableQuarters.length) return;
+    if (!qKey || !availableQuarters.includes(qKey)) {
+      setQKey(availableQuarters[availableQuarters.length - 1]);
+    }
+  }, [availableQuarters, qKey]);
+
+  const insights = useMemo(() => insightsByQuarter[qKey] || {}, [insightsByQuarter, qKey]);
 
   const dataView = useMemo(() => {
     const metrics = [];
@@ -1344,14 +1405,7 @@ export default function App() {
         yoy: getQuarterYoY(row, qKey),
         bench: getQuarterBench(row, qKey),
         outlook: out,
-        history: [
-          { q: "Q1 25", v: row.q1_2025 },
-          { q: "Q2 25", v: row.q2_2025 },
-          { q: "Q3 25", v: row.q3_2025 },
-          { q: "Q4 25", v: row.q4_2025 },
-          { q: "Q1 26", v: row.q1_2026 },
-          { q: "Q2 26", v: row.q2_2026 },
-        ].filter((item) => item.v !== null && item.v !== undefined),
+        history: buildMetricHistory(row),
       });
     });
 
@@ -1470,6 +1524,9 @@ export default function App() {
   }, [dataView, phaseScoresOnly]);
 
   const exportPDF = () => {
+    if (!isCurrentQuarterSelectable) {
+      return;
+    }
     document.body.classList.add("is-printing-dashboard");
 
     const cleanup = () => {
@@ -1507,6 +1564,19 @@ export default function App() {
           <p className="mt-4 text-xs text-slate-400">
             Controlla che gli sheet <strong>DB</strong> e <strong>Insights</strong>{" "}
             esistano e siano accessibili con API Key.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!availableQuarters.length) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6 text-center">
+        <div className="max-w-xl rounded-3xl bg-white p-8 shadow-sm ring-1 ring-slate-200">
+          <h1 className="text-2xl font-black text-slate-800">Nessun periodo disponibile</h1>
+          <p className="mt-3 text-sm font-semibold text-slate-500">
+            Sono selezionabili solo i quarter da <strong>{MIN_SELECTABLE_QUARTER}</strong> in avanti con almeno un valore reale nella colonna del quarter.
           </p>
         </div>
       </div>
@@ -1564,16 +1634,20 @@ export default function App() {
                 onChange={(event) => setQKey(event.target.value)}
                 className="w-full min-w-[230px] bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 shadow-sm outline-none ring-2 ring-transparent focus:ring-[#3B539E]"
               >
-                <option value="Q1">Q1 2026 Consuntivo</option>
-                <option value="Q2">Q2 2026 Consuntivo</option>
+                {availableQuarters.map((quarterOption) => (
+                  <option key={quarterOption} value={quarterOption}>
+                    {getQuarterDisplayLabel(quarterOption)}
+                  </option>
+                ))}
               </select>
             </div>
 
             <button
               onClick={exportPDF}
-              className="bg-[#3B539E] text-white px-6 py-2.5 rounded-xl font-bold text-sm shadow-md hover:opacity-90 transition-all flex items-center justify-center gap-2"
+              disabled={!isCurrentQuarterSelectable}
+              className={`px-6 py-2.5 rounded-xl font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 ${isCurrentQuarterSelectable ? "bg-[#3B539E] text-white hover:opacity-90" : "bg-slate-200 text-slate-400 cursor-not-allowed shadow-none"}`}
             >
-              🖨️ SALVA REPORT {qKey} IN PDF
+              🖨️ SALVA REPORT {qKey || ""} IN PDF
             </button>
           </div>
         </header>
