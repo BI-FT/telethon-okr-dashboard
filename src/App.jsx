@@ -57,7 +57,7 @@ const SCORE_BANDS = [
 
 const phaseOptions = ["Tutte", "Awareness", "Consideration", "Conversion"];
 const outlookOptions = ["Tutti", "POSITIVO", "STABILE", "NEGATIVO"];
-const INVERTED_YOY_KPI_IDS = new Set(["3.2", "3.3", "3.5"]);
+const INVERTED_YOY_KPI_IDS = new Set(["3.2","3.5"]);
 
 const MIN_SELECTABLE_QUARTER = "Q1 2026";
 const QUARTER_VALUE_HEADER_RE = /^Q([1-4])\s+(20\d{2})$/i;
